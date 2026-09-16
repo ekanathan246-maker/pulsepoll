@@ -1,0 +1,22 @@
+# Render blueprint – single web service running nginx + the Go backend.
+services:
+  - type: web
+    name: pulsepoll
+    runtime: docker
+    plan: free
+    dockerfilePath: ./deploy/combined.Dockerfile
+    envVars:
+      - key: ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MONGO_URI
+        value: mongodb+srv://USER:PASS@YOUR-CLUSTER.mongodb.net/?retryWrites=true&w=majority
+      - key: MONGO_DB
+        value: pulsepoll
+      - key: REDIS_ADDR
+        value: YOUR-REDIS-CLOUD-HOST:PORT
+      - key: REDIS_PASS
+        value: YOUR-REDIS-PASSWORD
+      - key: FRONTEND_ORIGINS
+        value: https://pulsepoll.onrender.com
