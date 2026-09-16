@@ -128,10 +128,11 @@ providers is a MongoDB (Atlas free tier) and a Redis (Redis Cloud free tier).
 1. Create a **MongoDB Atlas** cluster and a **Redis Cloud** database (free
    tiers are fine).
 2. Push the repo to GitHub.
-3. On Render, create a **Web Service** → **Deploy from Dockerfile**, pointing
-   at `deploy/combined.Dockerfile`. A blueprint (`deploy/render.yaml`) is
-   included for one-click setup.
-4. Set environment variables:
+3. On Render, create a **Web Service** → **Deploy from Blueprint**, selecting
+   `render.yaml` (repo root). This configures the Docker build, free plan, and
+   health check automatically.
+4. After the blueprint is applied, set the environment variables marked
+   `sync: false` on the Render dashboard (plus values for the rest):
    ```
    ENV=production
    MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>/?retryWrites=true&w=majority
@@ -140,6 +141,7 @@ providers is a MongoDB (Atlas free tier) and a Redis (Redis Cloud free tier).
    REDIS_PASS=<redis-password>
    JWT_SECRET=<64-char-random-string>
    FRONTEND_ORIGINS=https://your-app.onrender.com
+   PUBLIC_URL=https://your-app.onrender.com
    ```
 5. Expose port 80. Done.
 

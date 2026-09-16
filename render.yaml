@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: pulsepoll
+    runtime: docker
+    plan: free
+    dockerfilePath: deploy/combined.Dockerfile
+    healthCheckPath: /healthz
+    # Free instances auto-suspend when idle; wake time is ~30s on first request
+    # after a viewer opens the site.
+    envVars:
+      - key: ENV
+        value: production
+      - key: MONGO_DB
+        value: pulsepoll
+      # The values below are marked sync:false – fill them in on the Render
+      # dashboard after the blueprint is applied.
+      - key: JWT_SECRET
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: REDIS_ADDR
+        sync: false
+      - key: REDIS_PASS
+        sync: false
+      - key: FRONTEND_ORIGINS
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
