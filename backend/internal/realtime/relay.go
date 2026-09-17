@@ -59,7 +59,11 @@ func (r *Relay) processOne(ctx context.Context) (bool, error) {
 	update := bson.M{"$set": bson.M{"claimed_until": claimUntil}, "$inc": bson.M{"attempts": 1}}
 	var event models.OutboxEvent
 	err := r.outbox.FindOneAndUpdate(ctx, filter, update, options.FindOneAndUpdate().
-		SetSort(bson.D{{Key: "created_at", Value: 1}}).SetReturnDocument(options.After)).Decode(&event)
+		// A single relay publishes the durable per-poll sequence in version order.
+		// Sorting by request time is unsafe: concurrent transactions can commit in
+		// a different order and make clients observe version 9 before version 8.
+		SetSort(bson.D{{Key: "aggregate_id", Value: 1}, {Key: "version", Value: 1}, {Key: "created_at", Value: 1}}).
+		SetReturnDocument(options.After)).Decode(&event)
 	if err == mongo.ErrNoDocuments {
 		return false, nil
 	}

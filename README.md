@@ -125,6 +125,8 @@ The browser token prevents casual repeat voting; it is not proof of one human. C
 
 The included `render.yaml` and multi-stage `deploy/combined.Dockerfile` deploy the React UI, nginx proxy, and Go API as one Render service. Use MongoDB Atlas and a TLS Redis URL (for example Upstash) on their free tiers. Exact instructions and rollback checks are in [Deployment runbook](docs/DEPLOYMENT.md).
 
+The release image is also built in CI and asserted to run as UID/GID `101:101` rather than root.
+
 Required production variables:
 
 | Variable | Purpose |

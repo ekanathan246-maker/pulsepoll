@@ -53,6 +53,21 @@ func (s *StreamHandler) Stream(c *gin.Context) {
 		return
 	}
 
+	// Subscribe before taking the snapshot. Redis buffers events that arrive
+	// while Mongo is read, eliminating the snapshot->subscribe loss window.
+	ctx := c.Request.Context()
+	pubsub := s.hub.Subscribe(ctx, slug)
+	defer pubsub.Close()
+	if _, err := pubsub.Receive(ctx); err != nil {
+		c.JSON(http.StatusServiceUnavailable, middleware.ErrorBody("stream_unavailable", "Live updates are temporarily unavailable."))
+		return
+	}
+	if err := s.polls.FindOne(ctx, bson.M{"slug": slug, "deleted_at": bson.M{"$exists": false}}).Decode(&poll); err != nil {
+		c.JSON(http.StatusNotFound, middleware.ErrorBody("poll_not_found", "Poll not found."))
+		return
+	}
+	messages := pubsub.Channel(redis.WithChannelSize(256))
+
 	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		return
@@ -85,10 +100,6 @@ func (s *StreamHandler) Stream(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
-	pubsub := s.hub.Subscribe(ctx, slug)
-	defer pubsub.Close()
-	messages := pubsub.Channel(redis.WithChannelSize(32))
 	ticker := time.NewTicker(pingEvery)
 	defer ticker.Stop()
 	done := make(chan struct{})

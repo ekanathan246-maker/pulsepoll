@@ -128,6 +128,12 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, middleware.ErrorBody("invalid_credentials", "Email or password is incorrect."))
 		return
 	}
+	// Rotate any session presented by this browser after credentials succeed.
+	// Revocation is deliberately after password verification to avoid turning
+	// the login endpoint into a cross-site logout primitive.
+	if previousToken, cookieErr := c.Cookie(h.cfg.CookieName); cookieErr == nil {
+		_ = h.sessions.Revoke(c.Request.Context(), previousToken)
+	}
 	credentials, err := h.sessions.Create(c.Request.Context(), user.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, middleware.ErrorBody("internal_error", "Login is temporarily unavailable."))

@@ -106,7 +106,7 @@ func (h *PollHandler) CreatePoll(c *gin.Context) {
 			if mongo.IsDuplicateKeyError(err) {
 				continue
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, middleware.ErrorBody("poll_not_created", "Poll could not be created. Try again."))
 			return
 		}
 		c.JSON(http.StatusCreated, pollViewFromPoll(&poll, true))
@@ -124,14 +124,14 @@ func (h *PollHandler) GetMine(c *gin.Context) {
 		options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}),
 	)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, middleware.ErrorBody("polls_unavailable", "Polls are temporarily unavailable."))
 		return
 	}
 	defer cur.Close(ctx)
 
 	var polls []models.Poll
 	if err := cur.All(ctx, &polls); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, middleware.ErrorBody("polls_unavailable", "Polls are temporarily unavailable."))
 		return
 	}
 
@@ -160,6 +160,24 @@ func (h *PollHandler) GetPoll(c *gin.Context) {
 			canViewResults = countErr == nil && count > 0
 		}
 	}
+	if canViewResults {
+		if hotCounts, hotVersion, _, hotErr := h.hub.DurableSnapshot(ctx, slug); hotErr == nil && hotVersion == poll.Version {
+			for i := range poll.Options {
+				poll.Options[i].Count = hotCounts[poll.Options[i].ID]
+			}
+		} else {
+			// Never jump Redis ahead of pending outbox events: doing so would make
+			// their idempotency guard suppress legitimate WebSocket updates.
+			pending, pendingErr := h.outbox.CountDocuments(ctx, bson.M{
+				"aggregate_id": slug, "processed_at": bson.M{"$exists": false},
+			}, options.Count().SetLimit(1))
+			if pendingErr == nil && pending == 0 {
+				counts, _ := countsFromPoll(&poll)
+				// Cache repair is best-effort: Redis must never make the durable read fail.
+				_ = h.hub.RepairSnapshot(ctx, slug, poll.Version, counts, pollStatus(&poll))
+			}
+		}
+	}
 	c.JSON(http.StatusOK, pollViewFromPoll(&poll, canViewResults))
 }
 
@@ -169,7 +187,7 @@ func (h *PollHandler) Vote(c *gin.Context) {
 		OptionID string `json:"optionId" binding:"required"`
 	}
 	if err := httpx.DecodeJSON(c, &req, 8<<10); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, middleware.ErrorBody("invalid_request", "Choose a valid poll option."))
 		return
 	}
 	req.OptionID = strings.TrimSpace(req.OptionID)
@@ -304,9 +322,18 @@ func (h *PollHandler) ClosePoll(c *gin.Context) {
 	}
 	defer session.EndSession(ctx)
 	_, err = session.WithTransaction(ctx, func(tx mongo.SessionContext) (any, error) {
+		update := bson.M{
+			"$set": bson.M{"closed": newClosed, "updated_at": now},
+			"$inc": bson.M{"version": 1},
+		}
+		// Reopening a poll with an expired schedule must also clear that schedule;
+		// otherwise its computed status would remain closed even after toggling.
+		if !newClosed && poll.ClosesAt != nil && !poll.ClosesAt.After(now) {
+			update["$unset"] = bson.M{"closes_at": ""}
+		}
 		err := h.polls.FindOneAndUpdate(tx,
 			bson.M{"_id": poll.ID, "created_by": userID, "deleted_at": bson.M{"$exists": false}},
-			bson.M{"$set": bson.M{"closed": newClosed, "updated_at": now}, "$inc": bson.M{"version": 1}},
+			update,
 			options.FindOneAndUpdate().SetReturnDocument(options.After),
 		).Decode(&updated)
 		if err != nil {
@@ -328,7 +355,7 @@ func (h *PollHandler) ClosePoll(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, middleware.ErrorBody("status_not_changed", "Poll status could not be changed. Try again."))
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"closed": newClosed, "version": updated.Version})
+	c.JSON(http.StatusOK, gin.H{"closed": pollStatus(&updated) == "closed", "version": updated.Version})
 }
 
 func (h *PollHandler) DeletePoll(c *gin.Context) {

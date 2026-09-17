@@ -26,7 +26,7 @@ This runbook uses a single Render web service, MongoDB Atlas Free, and a TLS Red
 5. Set both origin variables to the exact final `https://<service>.onrender.com` URL.
 6. Deploy and wait for `/api/readyz` to return `{"status":"ready"}`.
 
-The image builds React and Go in separate stages, then runs nginx and the unprivileged application process under Supervisor. nginx serves static files and forwards REST/WebSocket traffic to the local API.
+The image builds React and Go in separate stages, then runs nginx and the Go application process as UID 101 under Supervisor. nginx listens on Render's standard port 10000, serves static files, and forwards REST/WebSocket traffic to the local API on port 18080.
 
 ## 4. Release verification
 

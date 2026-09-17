@@ -74,6 +74,10 @@ jobs:
         working-directory: backend
       - run: npm run test:e2e -- --project=chromium
         working-directory: frontend
+      - name: Build and verify non-root release image
+        run: |
+          docker build -f deploy/combined.Dockerfile -t pulsepoll-release .
+          test "$(docker image inspect pulsepoll-release --format '{{.Config.User}}')" = "101:101"
       - if: always()
         run: docker compose logs --no-color > compose.log
       - if: failure()

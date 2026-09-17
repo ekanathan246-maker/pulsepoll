@@ -11,9 +11,12 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type pollResponse struct {
@@ -50,6 +53,32 @@ func TestConcurrentVotesAreDurableAndDuplicateSafe(t *testing.T) {
 	}
 
 	const voters = 100
+	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") + "/api/polls/" + poll.Slug + "/live"
+	stream, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("connect live stream: %v", err)
+	}
+	defer stream.Close()
+	var initial liveEvent
+	if err := stream.ReadJSON(&initial); err != nil {
+		t.Fatalf("read initial stream snapshot: %v", err)
+	}
+	if initial.Type != "snapshot" || initial.Version != 1 {
+		t.Fatalf("initial stream event = %#v", initial)
+	}
+	events := make(chan liveEvent, voters*2)
+	streamErrors := make(chan error, 1)
+	go func() {
+		for {
+			var event liveEvent
+			if err := stream.ReadJSON(&event); err != nil {
+				streamErrors <- err
+				return
+			}
+			events <- event
+		}
+	}()
+
 	errCh := make(chan error, voters)
 	var wg sync.WaitGroup
 	for i := 0; i < voters; i++ {
@@ -87,6 +116,48 @@ func TestConcurrentVotesAreDurableAndDuplicateSafe(t *testing.T) {
 	if snapshot.Version != int64(voters+1) {
 		t.Fatalf("durable version = %d, want %d", snapshot.Version, voters+1)
 	}
+
+	// The outbox is complete only when every committed vote has produced one
+	// unique live event and Redis' final snapshot agrees with durable Mongo.
+	seen := make(map[string]bool, voters)
+	var final liveEvent
+	deadline := time.After(20 * time.Second)
+	for len(seen) < voters {
+		select {
+		case event := <-events:
+			if event.Type != "vote.applied" {
+				continue
+			}
+			if event.EventID == "" || seen[event.EventID] {
+				t.Fatalf("duplicate or empty live event id %q", event.EventID)
+			}
+			seen[event.EventID] = true
+			if event.Version > final.Version {
+				final = event
+			}
+		case err := <-streamErrors:
+			t.Fatalf("live stream ended early after %d events: %v", len(seen), err)
+		case <-deadline:
+			t.Fatalf("received %d/%d outbox events", len(seen), voters)
+		}
+	}
+	if final.Version != snapshot.Version {
+		t.Fatalf("Redis event version = %d, Mongo version = %d", final.Version, snapshot.Version)
+	}
+	var liveTotal int64
+	for _, count := range final.Counts {
+		liveTotal += count
+	}
+	if liveTotal != snapshot.TotalVotes {
+		t.Fatalf("Redis live total = %d, Mongo total = %d", liveTotal, snapshot.TotalVotes)
+	}
+}
+
+type liveEvent struct {
+	Type    string           `json:"type"`
+	EventID string           `json:"eventId"`
+	Version int64            `json:"version"`
+	Counts  map[string]int64 `json:"counts"`
 }
 
 func vote(client *http.Client, baseURL, slug, optionID string, index int) (int, error) {

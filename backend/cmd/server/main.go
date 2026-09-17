@@ -22,7 +22,6 @@ import (
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	cfg := config.Load()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -39,7 +38,6 @@ func main() {
 	if err != nil {
 		log.Fatal("failed to connect databases: ", err)
 	}
-	defer db.Close(context.Background())
 
 	hub := realtime.NewHub(db.Redis)
 	relay := realtime.NewRelay(db.Mongo, hub, logger)
@@ -57,6 +55,7 @@ func main() {
 	r.Use(middleware.RequestContext(logger))
 	r.Use(gin.Recovery())
 	r.Use(middleware.CORS(cfg))
+	r.Use(middleware.RequestTimeout(12 * time.Second))
 
 	liveHandler := func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -129,7 +128,14 @@ func main() {
 	}()
 
 	log.Printf("listening on :%s", cfg.Port)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+	serveErr := srv.ListenAndServe()
+	cancel()
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	if err := db.Close(closeCtx); err != nil {
+		logger.Error("database shutdown failed", "error", err)
+	}
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		log.Fatal(serveErr)
 	}
 }

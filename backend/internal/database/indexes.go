@@ -69,6 +69,9 @@ func EnsureIndexes(ctx context.Context, mongoURI, dbName string) error {
 		{
 			Keys: bson.D{{Key: "processed_at", Value: 1}, {Key: "next_attempt_at", Value: 1}, {Key: "claimed_until", Value: 1}},
 		},
+		{
+			Keys: bson.D{{Key: "aggregate_id", Value: 1}, {Key: "processed_at", Value: 1}, {Key: "version", Value: 1}},
+		},
 	}); err != nil {
 		return err
 	}

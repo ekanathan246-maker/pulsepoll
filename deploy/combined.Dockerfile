@@ -19,11 +19,14 @@ COPY backend/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /server ./cmd/server
 
 # 3) Runtime: nginx + go server under supervisord
-FROM nginx:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.27-alpine
+USER root
 RUN apk add --no-cache supervisor
 COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
 COPY deploy/supervisord.conf /etc/supervisord.conf
 COPY --from=fe /fe/dist /usr/share/nginx/html
 COPY --from=be /server /usr/local/bin/pulsepoll
-EXPOSE 80
+RUN chown -R 101:101 /usr/share/nginx/html /etc/nginx/conf.d /etc/supervisord.conf /usr/local/bin/pulsepoll
+USER 101:101
+EXPOSE 10000
 CMD ["supervisord", "-c", "/etc/supervisord.conf"]

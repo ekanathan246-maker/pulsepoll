@@ -26,6 +26,8 @@ export default function PollView() {
     return api
       .getPoll(slug)
       .then((p) => {
+        setNotFound(false)
+        setError('')
         setPoll(p)
 				versionRef.current = p.version
         setCounts(p.liveCounts ?? {})
@@ -37,8 +39,27 @@ export default function PollView() {
           )
         }
       })
-      .catch(() => setNotFound(true))
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 404) {
+          setNotFound(true)
+          return
+        }
+        setError(err instanceof ApiError ? err.message : 'Could not refresh this poll')
+      })
   }, [slug])
+
+  // A scheduled close has no write event, so refresh durable state at the
+  // deadline instead of leaving already-connected viewers with an open UI.
+  useEffect(() => {
+    if (!poll?.closes_at || poll.closed) return
+    const delay = new Date(poll.closes_at).getTime() - Date.now()
+    if (delay <= 0) {
+      void syncPoll()
+      return
+    }
+    const timer = window.setTimeout(() => void syncPoll(), Math.min(delay + 100, 2_147_483_647))
+    return () => window.clearTimeout(timer)
+  }, [poll?.closes_at, poll?.closed, syncPoll])
 
   // Load durable state, then keep a versioned WebSocket connected. A gap or
   // reconnect always replaces local state from the REST snapshot.
@@ -129,6 +150,7 @@ export default function PollView() {
     return (
       <div className="center-page">
         <div className="spinner" />
+        {error && <p className="form-error">{error}</p>}
       </div>
     )
   }

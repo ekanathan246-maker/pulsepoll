@@ -38,6 +38,22 @@ type Hub struct {
 	rdb *redis.Client
 }
 
+var repairSnapshotScript = redis.NewScript(`
+local current = tonumber(redis.call('GET', KEYS[2]) or '0')
+local incoming = tonumber(ARGV[1])
+if incoming >= current then
+  local counts = cjson.decode(ARGV[2])
+  redis.call('DEL', KEYS[1])
+  for optionId, count in pairs(counts) do
+    redis.call('HSET', KEYS[1], optionId, count)
+  end
+  redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[4])
+  redis.call('SET', KEYS[3], ARGV[3], 'EX', ARGV[4])
+  redis.call('EXPIRE', KEYS[1], ARGV[4])
+end
+return 1
+`)
+
 // ApplyEvent idempotently replaces the hot snapshot and publishes the durable
 // event. Supplying a full count snapshot means a version gap self-heals.
 func (h *Hub) ApplyEvent(ctx context.Context, event models.OutboxEvent) error {
@@ -70,6 +86,48 @@ func ginEvent(event models.OutboxEvent) map[string]any {
 // NewHub returns a Hub bound to the given Redis client.
 func NewHub(rdb *redis.Client) *Hub {
 	return &Hub{rdb: rdb}
+}
+
+// DurableSnapshot returns the hot Redis view and its version. Callers use it
+// only when its version exactly matches Mongo; Mongo remains the authority.
+func (h *Hub) DurableSnapshot(ctx context.Context, slug string) (map[string]int64, int64, string, error) {
+	pipe := h.rdb.Pipeline()
+	countsCmd := pipe.HGetAll(ctx, PollVotesKey(slug))
+	versionCmd := pipe.Get(ctx, PollVersionKey(slug))
+	statusCmd := pipe.Get(ctx, PollStatusKey(slug))
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return nil, 0, "", err
+	}
+	version, err := versionCmd.Int64()
+	if err != nil {
+		return nil, 0, "", err
+	}
+	status, err := statusCmd.Result()
+	if err != nil {
+		return nil, 0, "", err
+	}
+	counts := make(map[string]int64, len(countsCmd.Val()))
+	for optionID, raw := range countsCmd.Val() {
+		var value int64
+		if _, err := fmt.Sscan(raw, &value); err != nil {
+			return nil, 0, "", err
+		}
+		counts[optionID] = value
+	}
+	return counts, version, status, nil
+}
+
+// RepairSnapshot repopulates an absent or stale hot view without publishing a
+// user-visible event. Version monotonicity prevents older repairs overwriting
+// a newer outbox event.
+func (h *Hub) RepairSnapshot(ctx context.Context, slug string, version int64, counts map[string]int64, status string) error {
+	encoded, err := json.Marshal(counts)
+	if err != nil {
+		return err
+	}
+	return repairSnapshotScript.Run(ctx, h.rdb, []string{
+		PollVotesKey(slug), PollVersionKey(slug), PollStatusKey(slug),
+	}, version, string(encoded), status, int64((30*24*time.Hour)/time.Second)).Err()
 }
 
 // VoteSnapshot is the JSON payload sent on each vote event.
