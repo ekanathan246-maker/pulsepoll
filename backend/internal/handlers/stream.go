@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"pulsepoll/backend/internal/middleware"
 	"pulsepoll/backend/internal/models"
+	"pulsepoll/backend/internal/observability"
 	"pulsepoll/backend/internal/realtime"
 
 	"github.com/gin-gonic/gin"
@@ -17,9 +19,10 @@ import (
 )
 
 const (
-	writeWait = 5 * time.Second
-	pongWait  = 45 * time.Second
-	pingEvery = 20 * time.Second
+	writeWait                 = 5 * time.Second
+	pongWait                  = 45 * time.Second
+	pingEvery                 = 20 * time.Second
+	maxWebSocketClients int64 = 2000
 )
 
 type StreamHandler struct {
@@ -27,13 +30,17 @@ type StreamHandler struct {
 	polls    *mongo.Collection
 	votes    *mongo.Collection
 	upgrader websocket.Upgrader
+	shutdown context.Context
+	metrics  *observability.Metrics
 }
 
-func NewStreamHandler(hub *realtime.Hub, db *mongo.Database) *StreamHandler {
+func NewStreamHandler(hub *realtime.Hub, db *mongo.Database, shutdown context.Context, metrics *observability.Metrics) *StreamHandler {
 	return &StreamHandler{
-		hub:   hub,
-		polls: db.Collection("polls"),
-		votes: db.Collection("votes"),
+		hub:      hub,
+		polls:    db.Collection("polls"),
+		votes:    db.Collection("votes"),
+		shutdown: shutdown,
+		metrics:  metrics,
 		upgrader: websocket.Upgrader{
 			HandshakeTimeout: 5 * time.Second,
 			ReadBufferSize:   1024, WriteBufferSize: 2048,
@@ -46,6 +53,12 @@ func NewStreamHandler(hub *realtime.Hub, db *mongo.Database) *StreamHandler {
 // then forwards versioned Redis events. Clients replace state from REST on any
 // version gap or reconnect.
 func (s *StreamHandler) Stream(c *gin.Context) {
+	if !s.metrics.TryOpenWebSocket(maxWebSocketClients) {
+		c.JSON(http.StatusServiceUnavailable, middleware.ErrorBody("stream_capacity", "Live updates are at capacity. Please retry shortly."))
+		return
+	}
+	defer s.metrics.CloseWebSocket()
+
 	slug := c.Param("slug")
 	var poll models.Poll
 	if err := s.polls.FindOne(c.Request.Context(), bson.M{"slug": slug, "deleted_at": bson.M{"$exists": false}}).Decode(&poll); err != nil {
@@ -115,6 +128,11 @@ func (s *StreamHandler) Stream(c *gin.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-s.shutdown.Done():
+			_ = conn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseGoingAway, "server restarting"),
+				time.Now().Add(writeWait))
 			return
 		case <-done:
 			return

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -15,9 +16,13 @@ import (
 	"pulsepoll/backend/internal/database"
 	"pulsepoll/backend/internal/handlers"
 	"pulsepoll/backend/internal/middleware"
+	"pulsepoll/backend/internal/models"
+	"pulsepoll/backend/internal/observability"
 	"pulsepoll/backend/internal/realtime"
 
 	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func main() {
@@ -39,20 +44,23 @@ func main() {
 		log.Fatal("failed to connect databases: ", err)
 	}
 
+	metrics := observability.NewMetrics()
+	var acceptingTraffic atomic.Bool
+	acceptingTraffic.Store(true)
 	hub := realtime.NewHub(db.Redis)
-	relay := realtime.NewRelay(db.Mongo, hub, logger)
+	relay := realtime.NewRelay(db.Mongo, hub, logger, metrics)
 	go relay.Run(ctx)
 	sessionManager := auth.NewManager(auth.NewMongoStore(db.Mongo), time.Now)
 
 	authH := handlers.NewAuthHandler(db.Mongo, cfg, sessionManager)
 	pollH := handlers.NewPollHandler(db.Mongo, hub, cfg)
-	streamH := handlers.NewStreamHandler(hub, db.Mongo)
+	streamH := handlers.NewStreamHandler(hub, db.Mongo, ctx, metrics)
 
 	if cfg.IsProduction() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
-	r.Use(middleware.RequestContext(logger))
+	r.Use(middleware.RequestContext(logger, metrics))
 	r.Use(gin.Recovery())
 	r.Use(middleware.CORS(cfg))
 	r.Use(middleware.RequestTimeout(12 * time.Second))
@@ -61,6 +69,10 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	}
 	readyHandler := func(c *gin.Context) {
+		if !acceptingTraffic.Load() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready", "reason": "shutting_down"})
+			return
+		}
 		readyCtx, readyCancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 		defer readyCancel()
 		if err := db.Mongo.Client().Ping(readyCtx, nil); err != nil {
@@ -77,6 +89,28 @@ func main() {
 	r.GET("/readyz", readyHandler)
 	r.GET("/api/livez", liveHandler)
 	r.GET("/api/readyz", readyHandler)
+	r.GET("/api/metrics", func(c *gin.Context) {
+		metricsCtx, metricsCancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer metricsCancel()
+		outbox := db.Mongo.Collection("outbox")
+		pending, err := outbox.CountDocuments(metricsCtx, bson.M{"processed_at": bson.M{"$exists": false}})
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, middleware.ErrorBody("metrics_unavailable", "Operational metrics are temporarily unavailable."))
+			return
+		}
+		snapshot := metrics.Snapshot()
+		snapshot["outboxPending"] = pending
+		var oldest models.OutboxEvent
+		if err := outbox.FindOne(metricsCtx,
+			bson.M{"processed_at": bson.M{"$exists": false}},
+			options.FindOne().SetSort(bson.D{{Key: "created_at", Value: 1}}),
+		).Decode(&oldest); err == nil {
+			snapshot["outboxOldestAgeSeconds"] = int64(time.Since(oldest.CreatedAt).Seconds())
+		} else {
+			snapshot["outboxOldestAgeSeconds"] = 0
+		}
+		c.JSON(http.StatusOK, snapshot)
+	})
 
 	// Public app config — lets the frontend build share links from a real
 	// domain instead of whatever hostname it happens to be served from.
@@ -115,6 +149,7 @@ func main() {
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
@@ -122,7 +157,9 @@ func main() {
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 		<-quit
 		log.Println("shutting down...")
-		shutdownCtx, shCancel := context.WithTimeout(ctx, 5*time.Second)
+		acceptingTraffic.Store(false)
+		cancel() // stops the relay and closes active WebSockets before draining HTTP
+		shutdownCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shCancel()
 		srv.Shutdown(shutdownCtx)
 	}()

@@ -2,6 +2,8 @@
 
 PulsePoll turns one question into a shared live moment: create a poll, share a link or QR code, and watch versioned results move across every connected screen.
 
+![PulsePoll live poll on desktop](docs/screenshots/live-poll.png)
+
 This repository is deliberately **production-shaped, not production-claimed**. MongoDB is the durable acceptance boundary, Redis owns the hot snapshot and multi-instance fan-out, and reconnecting clients repair themselves from a versioned REST snapshot. The included free-tier deployment is suitable for an evaluation demo, not an SLA.
 
 ## What reviewers can prove
@@ -14,7 +16,7 @@ This repository is deliberately **production-shaped, not production-claimed**. M
 - Recover from a missed event or reconnect by replacing client state from the durable snapshot.
 - Keep an accepted vote safe when Redis is unavailable; the relay retries with bounded exponential backoff.
 - Withhold results before voting unless the host explicitly enables early results.
-- Diagnose the service through request IDs, JSON logs, `/api/livez`, and `/api/readyz`.
+- Diagnose the service through request IDs, JSON logs, `/api/livez`, `/api/readyz`, and dependency-free JSON metrics at `/api/metrics`.
 
 ## Architecture
 
@@ -89,6 +91,16 @@ k6 run -e BASE_URL=http://localhost -e POLL_SLUG=<slug> -e OPTION_ID=<id> loadte
 ```
 
 Targets are evaluation goals, not free-tier promises. Record region, hardware, warm/cold state, and the raw k6 summary with any published result.
+For a reproducible local run that creates its own poll and rejects count drift, use `scripts/run-local-loadtest.sh`. The latest checked-in raw result and environment notes are under `docs/evidence/`.
+
+Seed or reset the reproducible local interview demo:
+
+```bash
+scripts/demo.sh seed
+scripts/demo.sh reset
+```
+
+The script refuses to seed a remote URL with its local-only default password. See [Demo script](docs/DEMO_SCRIPT.md) for the presentation flow.
 
 ## Repository map
 
@@ -146,6 +158,7 @@ Never commit secrets. `.env.example` contains names and safe local examples only
 - [3–5 minute demo script](docs/DEMO_SCRIPT.md)
 - [Interview questions and honest trade-offs](docs/INTERVIEW_GUIDE.md)
 - [OpenAPI contract](docs/openapi.yaml)
+- [Measured local load evidence](docs/evidence/README.md)
 
 ## License
 

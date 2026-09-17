@@ -26,6 +26,8 @@ jobs:
           cache-dependency-path: backend/go.sum
       - run: go test -race ./...
       - run: go vet ./...
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   frontend:
     runs-on: ubuntu-latest
@@ -43,6 +45,9 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm audit --audit-level=high
+      - name: Validate OpenAPI contract
+        run: npx --yes @redocly/cli@2.53.3 lint docs/openapi.yaml
+        working-directory: .
 
   integration:
     runs-on: ubuntu-latest
@@ -72,7 +77,10 @@ jobs:
           exit 1
       - run: go test -tags=integration ./tests -count=1 -v
         working-directory: backend
-      - run: npm run test:e2e -- --project=chromium
+      - name: Prove Redis outage recovery
+        run: bash scripts/redis-failure-drill.sh
+      - name: Browser flows (desktop and mobile)
+        run: npm run test:e2e
         working-directory: frontend
       - name: Build and verify non-root release image
         run: |

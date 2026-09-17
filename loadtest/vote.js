@@ -1,15 +1,15 @@
 import http from 'k6/http'
-import { check, sleep } from 'k6'
+import { check } from 'k6'
 
 export const options = {
   scenarios: {
     vote_burst: {
-      executor: 'ramping-vus',
-      stages: [
-        { duration: '10s', target: 25 },
-        { duration: '20s', target: 50 },
-        { duration: '10s', target: 0 },
-      ],
+      executor: 'constant-arrival-rate',
+      duration: __ENV.DURATION || '20s',
+      rate: Number(__ENV.RATE || 20),
+      timeUnit: '1s',
+      preAllocatedVUs: 25,
+      maxVUs: 100,
     },
   },
   thresholds: {
@@ -24,18 +24,19 @@ const optionID = __ENV.OPTION_ID
 
 export default function () {
   if (!slug || !optionID) throw new Error('Set POLL_SLUG and OPTION_ID')
+  const voterID = `k6-${__VU}-${__ITER}-${Date.now()}-${Math.random().toString(36).slice(2)}`
   const response = http.post(
     `${baseURL}/api/polls/${slug}/vote`,
     JSON.stringify({ optionId: optionID }),
     {
       headers: {
         'Content-Type': 'application/json',
-        // Give each virtual user a stable browser identity. The server stores
-        // the returned ppv cookie in k6's per-VU cookie jar.
+        // Every iteration models a new browser identity. The application is
+        // explicit that this cookie is abuse friction, not proof of a person.
+        Cookie: `ppv=${voterID}`,
         'User-Agent': `pulsepoll-k6-vu-${__VU}`,
       },
     },
   )
-  check(response, { 'vote accepted or duplicate': (res) => res.status === 202 || res.status === 409 })
-  sleep(0.2)
+  check(response, { 'vote accepted': (res) => res.status === 202 })
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"pulsepoll/backend/internal/models"
+	"pulsepoll/backend/internal/observability"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -14,13 +15,14 @@ import (
 )
 
 type Relay struct {
-	outbox *mongo.Collection
-	hub    *Hub
-	log    *slog.Logger
+	outbox  *mongo.Collection
+	hub     *Hub
+	log     *slog.Logger
+	metrics *observability.Metrics
 }
 
-func NewRelay(db *mongo.Database, hub *Hub, logger *slog.Logger) *Relay {
-	return &Relay{outbox: db.Collection("outbox"), hub: hub, log: logger}
+func NewRelay(db *mongo.Database, hub *Hub, logger *slog.Logger, metrics *observability.Metrics) *Relay {
+	return &Relay{outbox: db.Collection("outbox"), hub: hub, log: logger, metrics: metrics}
 }
 
 func (r *Relay) Run(ctx context.Context) {
@@ -71,6 +73,7 @@ func (r *Relay) processOne(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if err := r.hub.ApplyEvent(ctx, event); err != nil {
+		r.metrics.RelayFailed()
 		seconds := math.Min(30, math.Pow(2, float64(event.Attempts)))
 		_, updateErr := r.outbox.UpdateByID(ctx, event.ID, bson.M{
 			"$set":   bson.M{"next_attempt_at": now.Add(time.Duration(seconds) * time.Second)},
@@ -85,5 +88,8 @@ func (r *Relay) processOne(ctx context.Context) (bool, error) {
 		"$set":   bson.M{"processed_at": now},
 		"$unset": bson.M{"claimed_until": ""},
 	})
+	if err == nil {
+		r.metrics.RelayProcessed()
+	}
 	return true, err
 }

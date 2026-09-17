@@ -5,12 +5,13 @@ import (
 	"strings"
 	"time"
 
+	"pulsepoll/backend/internal/observability"
 	"pulsepoll/backend/internal/utils"
 
 	"github.com/gin-gonic/gin"
 )
 
-func RequestContext(logger *slog.Logger) gin.HandlerFunc {
+func RequestContext(logger *slog.Logger, metrics *observability.Metrics) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		started := time.Now()
 		requestID := strings.TrimSpace(c.GetHeader("X-Request-ID"))
@@ -20,6 +21,7 @@ func RequestContext(logger *slog.Logger) gin.HandlerFunc {
 		c.Set("request_id", requestID)
 		c.Header("X-Request-ID", requestID)
 		c.Next()
+		metrics.ObserveRequest(c.Writer.Status(), time.Since(started))
 		logger.Info("http request",
 			"request_id", requestID,
 			"method", c.Request.Method,

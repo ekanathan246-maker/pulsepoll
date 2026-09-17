@@ -161,11 +161,23 @@ func (h *PollHandler) GetPoll(c *gin.Context) {
 		}
 	}
 	if canViewResults {
-		if hotCounts, hotVersion, _, hotErr := h.hub.DurableSnapshot(ctx, slug); hotErr == nil && hotVersion == poll.Version {
+		hotCounts, hotVersion, _, hotErr := h.hub.DurableSnapshot(ctx, slug)
+		hotComplete := hotErr == nil && hotVersion == poll.Version && len(hotCounts) == len(poll.Options)
+		if hotComplete {
+			for _, option := range poll.Options {
+				_, exists := hotCounts[option.ID]
+				if !exists {
+					hotComplete = false
+					break
+				}
+			}
+		}
+		if hotComplete {
 			for i := range poll.Options {
 				poll.Options[i].Count = hotCounts[poll.Options[i].ID]
 			}
-		} else {
+		}
+		if !hotComplete {
 			// Never jump Redis ahead of pending outbox events: doing so would make
 			// their idempotency guard suppress legitimate WebSocket updates.
 			pending, pendingErr := h.outbox.CountDocuments(ctx, bson.M{

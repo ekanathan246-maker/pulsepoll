@@ -151,6 +151,31 @@ func TestConcurrentVotesAreDurableAndDuplicateSafe(t *testing.T) {
 	if liveTotal != snapshot.TotalVotes {
 		t.Fatalf("Redis live total = %d, Mongo total = %d", liveTotal, snapshot.TotalVotes)
 	}
+
+	// A disconnected viewer must recover from the next durable snapshot even
+	// though Redis Pub/Sub does not retain the event it missed.
+	_ = stream.Close()
+	reconnectVoter := newClient()
+	status, err := vote(reconnectVoter, baseURL, poll.Slug, poll.Options[1].ID, voters+1)
+	if err != nil || status != http.StatusAccepted {
+		t.Fatalf("reconnect vote status=%d err=%v", status, err)
+	}
+	reconnected, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("reconnect live stream: %v", err)
+	}
+	defer reconnected.Close()
+	var recovered liveEvent
+	if err := reconnected.ReadJSON(&recovered); err != nil {
+		t.Fatalf("read reconnect snapshot: %v", err)
+	}
+	var recoveredTotal int64
+	for _, count := range recovered.Counts {
+		recoveredTotal += count
+	}
+	if recovered.Type != "snapshot" || recovered.Version != int64(voters+2) || recoveredTotal != voters+1 {
+		t.Fatalf("reconnect snapshot = %#v total=%d", recovered, recoveredTotal)
+	}
 }
 
 type liveEvent struct {

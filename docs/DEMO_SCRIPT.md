@@ -1,5 +1,7 @@
 # 3–5 minute demo script
 
+Before recording, start Compose and run `scripts/demo.sh reset` followed by `scripts/demo.sh seed`. The seed command prints the fresh share URL; the reset command archives only polls whose title begins with `[DEMO]`.
+
 ## 0:00–0:35 — The product moment
 
 Open the landing page. Say: “PulsePoll turns one question into a live room signal. A host shares one link; guests need no account.” Sign in and create a two-option poll.

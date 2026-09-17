@@ -66,7 +66,7 @@ func (h *Hub) ApplyEvent(ctx context.Context, event models.OutboxEvent) error {
 		return err
 	}
 	_, err = applyEventScript.Run(ctx, h.rdb, []string{
-		PollVotesKey(event.AggregateID),
+		PollCountsKey(event.AggregateID),
 		PollVersionKey(event.AggregateID),
 		PollStatusKey(event.AggregateID),
 		AppliedEventKey(event.EventID),
@@ -92,7 +92,7 @@ func NewHub(rdb *redis.Client) *Hub {
 // only when its version exactly matches Mongo; Mongo remains the authority.
 func (h *Hub) DurableSnapshot(ctx context.Context, slug string) (map[string]int64, int64, string, error) {
 	pipe := h.rdb.Pipeline()
-	countsCmd := pipe.HGetAll(ctx, PollVotesKey(slug))
+	countsCmd := pipe.HGetAll(ctx, PollCountsKey(slug))
 	versionCmd := pipe.Get(ctx, PollVersionKey(slug))
 	statusCmd := pipe.Get(ctx, PollStatusKey(slug))
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
@@ -126,7 +126,7 @@ func (h *Hub) RepairSnapshot(ctx context.Context, slug string, version int64, co
 		return err
 	}
 	return repairSnapshotScript.Run(ctx, h.rdb, []string{
-		PollVotesKey(slug), PollVersionKey(slug), PollStatusKey(slug),
+		PollCountsKey(slug), PollVersionKey(slug), PollStatusKey(slug),
 	}, version, string(encoded), status, int64((30*24*time.Hour)/time.Second)).Err()
 }
 
@@ -141,7 +141,7 @@ type VoteSnapshot struct {
 // into the dedup set (returning true if the vote was new), then publishes
 // a full snapshot to the pub/sub channel.
 func (h *Hub) IncrVote(ctx context.Context, slug, optionID, voterID string) (*VoteSnapshot, bool, error) {
-	votesKey := PollVotesKey(slug)
+	votesKey := PollCountsKey(slug)
 	totalKey := PollTotalKey(slug)
 	votersKey := PollVotersKey(slug)
 
@@ -181,7 +181,7 @@ func (h *Hub) IncrVote(ctx context.Context, slug, optionID, voterID string) (*Vo
 
 // SnapshotCounts reads the full vote tallies straight from Redis.
 func (h *Hub) SnapshotCounts(ctx context.Context, slug string) (map[string]int64, int64, error) {
-	counts, err := h.rdb.HGetAll(ctx, PollVotesKey(slug)).Result()
+	counts, err := h.rdb.HGetAll(ctx, PollCountsKey(slug)).Result()
 	if err != nil {
 		return nil, 0, err
 	}
