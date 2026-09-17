@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { api, ApiError, shareUrl, streamPoll } from '../lib/api'
+import { api, ApiError, streamPoll } from '../lib/api'
 import type { Poll, VoteUpdate } from '../lib/types'
 import { ResultBar, usePollStats } from '../components/ResultBar'
+import ShareCard from '../components/ShareCard'
 
 const VOTED_KEY = (slug: string) => `ppvoted:${slug}`
 
@@ -15,7 +16,6 @@ export default function PollView() {
     localStorage.getItem(VOTED_KEY(slug)),
   )
   const [error, setError] = useState('')
-  const [toast, setToast] = useState('')
   const [connected, setConnected] = useState(false)
   const esRef = useRef<EventSource | null>(null)
 
@@ -68,21 +68,6 @@ export default function PollView() {
 
     return () => es.close()
   }, [slug, syncPoll])
-
-  function notify(msg: string) {
-    setToast(msg)
-    setTimeout(() => setToast(''), 2200)
-  }
-
-  async function copyLink() {
-    const url = shareUrl(slug)
-    try {
-      await navigator.clipboard.writeText(url)
-      notify('Link copied')
-    } catch {
-      notify(url)
-    }
-  }
 
   async function castVote(optionId: string) {
     if (votedOption || isClosed) return
@@ -179,15 +164,9 @@ export default function PollView() {
         )}
       </div>
 
-      <div className="share-row">
-        <input className="input share-input" readOnly value={shareUrl(slug)} />
-        <button className="btn" onClick={copyLink}>
-          Copy link
-        </button>
-      </div>
+      <ShareCard slug={slug} />
 
       {error && <p className="form-error" style={{ marginTop: 14 }}>{error}</p>}
-      {toast && <div className="toast good">{toast}</div>}
     </div>
   )
 }

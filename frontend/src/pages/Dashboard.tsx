@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, ApiError, shareUrl } from '../lib/api'
+import { api, ApiError } from '../lib/api'
 import type { Poll } from '../lib/types'
+import ShareCard from '../components/ShareCard'
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, {
@@ -14,28 +15,13 @@ function formatDate(iso: string) {
 export default function Dashboard() {
   const [polls, setPolls] = useState<Poll[] | null>(null)
   const [error, setError] = useState('')
-  const [toast, setToast] = useState('')
+  const [shareSlug, setShareSlug] = useState<string | null>(null)
 
   if (polls === null && !error) {
     api
       .getMine()
       .then(setPolls)
       .catch((e) => setError(e instanceof ApiError ? e.message : 'Failed to load polls'))
-  }
-
-  function notify(msg: string) {
-    setToast(msg)
-    setTimeout(() => setToast(''), 2200)
-  }
-
-  async function copyLink(slug: string) {
-    const url = shareUrl(slug)
-    try {
-      await navigator.clipboard.writeText(url)
-      notify('Link copied')
-    } catch {
-      notify(url)
-    }
   }
 
   async function toggleClose(p: Poll) {
@@ -93,7 +79,7 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="poll-row-actions">
-                <button className="btn btn-ghost" onClick={() => copyLink(p.slug)}>
+                <button className="btn btn-ghost" onClick={() => setShareSlug(p.slug)}>
                   Share
                 </button>
                 <button className="btn btn-ghost" onClick={() => toggleClose(p)}>
@@ -115,7 +101,19 @@ export default function Dashboard() {
         </div>
       ))}
 
-      {toast && <div className="toast good">{toast}</div>}
+      {shareSlug && (
+        <div className="modal-backdrop" onClick={() => setShareSlug(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Share poll</h3>
+              <button className="icon-btn" onClick={() => setShareSlug(null)} aria-label="Close">
+                ×
+              </button>
+            </div>
+            <ShareCard slug={shareSlug} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
