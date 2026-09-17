@@ -16,8 +16,8 @@ export default function PollView() {
     localStorage.getItem(VOTED_KEY(slug)),
   )
   const [error, setError] = useState('')
-  const [connected, setConnected] = useState(false)
-  const esRef = useRef<EventSource | null>(null)
+	const [connection, setConnection] = useState<'connecting' | 'live' | 'reconnecting'>('connecting')
+	const versionRef = useRef(0)
 
   const { total: totalVotes, winners } = usePollStats(counts)
   const isClosed = poll?.closed ?? false
@@ -27,6 +27,7 @@ export default function PollView() {
       .getPoll(slug)
       .then((p) => {
         setPoll(p)
+				versionRef.current = p.version
         setCounts(p.liveCounts ?? {})
         if (p.closed) {
           setCounts(
@@ -39,35 +40,61 @@ export default function PollView() {
       .catch(() => setNotFound(true))
   }, [slug])
 
-  // Load poll + open the SSE stream
+  // Load durable state, then keep a versioned WebSocket connected. A gap or
+  // reconnect always replaces local state from the REST snapshot.
   useEffect(() => {
-    syncPoll()
+		let socket: WebSocket | null = null
+		let retryTimer: number | undefined
+		let stopped = false
+		let attempt = 0
+		void syncPoll()
 
-    const es = streamPoll(slug)
-    esRef.current = es
-    es.onopen = () => {
-      setConnected(true)
-      // On (re)connect, re-fetch to get the freshest snapshot.
-      syncPoll()
-    }
-    es.addEventListener('update', (e) => {
-      try {
-        const data = JSON.parse((e as MessageEvent).data) as VoteUpdate
-        if (data.closed !== undefined) {
-          setPoll((prev) => (prev ? { ...prev, closed: Boolean(data.closed) } : prev))
-        }
-        if (data.counts) {
-          setCounts(data.counts)
-          setPoll((prev) => (prev ? { ...prev, totalVotes: data.total } : prev))
-        }
-      } catch {
-        /* ignore malformed frame */
-      }
-    })
-    es.onerror = () => setConnected(false)
-
-    return () => es.close()
-  }, [slug, syncPoll])
+		function connect() {
+			if (stopped) return
+			setConnection(attempt === 0 ? 'connecting' : 'reconnecting')
+			socket = streamPoll(slug)
+			socket.onopen = () => {
+				attempt = 0
+				setConnection('live')
+				void syncPoll()
+			}
+			socket.onmessage = (event) => {
+				try {
+					const data = JSON.parse(event.data) as VoteUpdate
+					if (data.type !== 'snapshot' && data.version !== versionRef.current + 1) {
+						void syncPoll()
+						return
+					}
+					versionRef.current = data.version
+					if (!data.counts) {
+						versionRef.current = data.version
+						return
+					}
+					setCounts(data.counts)
+					const total = Object.values(data.counts).reduce((sum, count) => sum + count, 0)
+					setPoll((prev) => prev ? {
+						...prev, version: data.version, closed: data.status === 'closed', totalVotes: total,
+					} : prev)
+				} catch {
+					void syncPoll()
+				}
+			}
+			socket.onclose = () => {
+				if (stopped) return
+				setConnection('reconnecting')
+				attempt += 1
+				const delay = Math.min(10_000, 500 * 2 ** Math.min(attempt, 5)) + Math.random() * 300
+				retryTimer = window.setTimeout(connect, delay)
+			}
+			socket.onerror = () => socket?.close()
+		}
+		connect()
+		return () => {
+			stopped = true
+			if (retryTimer) window.clearTimeout(retryTimer)
+			socket?.close()
+		}
+	}, [slug, syncPoll, votedOption])
 
   async function castVote(optionId: string) {
     if (votedOption || isClosed) return
@@ -77,7 +104,7 @@ export default function PollView() {
       localStorage.setItem(VOTED_KEY(slug), optionId)
       setVotedOption(optionId)
       setCounts(res.counts)
-      setPoll((prev) => (prev ? { ...prev, totalVotes: res.total } : prev))
+		setPoll((prev) => (prev ? { ...prev, totalVotes: res.total, version: res.version, canViewResults: true } : prev))
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         // Already voted on this device – reconcile with server truth.
@@ -117,8 +144,8 @@ export default function PollView() {
               <span className="dot" /> Closed
             </span>
           ) : (
-            <span className="live-pill">
-              <span className="dot" /> Live{connected ? '' : ' · reconnecting'}
+			<span className={`live-pill${connection === 'live' ? '' : ' syncing-pill'}`}>
+				<span className="dot" /> {connection === 'live' ? 'Live · synced' : connection === 'reconnecting' ? 'Reconnecting' : 'Connecting'}
             </span>
           )}
           <span className="total-votes">
@@ -144,6 +171,7 @@ export default function PollView() {
                 voted={votedOption === o.id}
                 disabled={isClosed || !!votedOption}
                 winner={winners.has(o.id)}
+				reveal={poll.canViewResults || !!votedOption || isClosed}
                 onVote={(opt) => castVote(opt.id)}
               />
             )

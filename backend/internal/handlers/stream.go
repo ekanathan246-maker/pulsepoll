@@ -1,68 +1,135 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
+	"pulsepoll/backend/internal/middleware"
+	"pulsepoll/backend/internal/models"
 	"pulsepoll/backend/internal/realtime"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
-// StreamHandler manages SSE connections for live poll updates.
+const (
+	writeWait = 5 * time.Second
+	pongWait  = 45 * time.Second
+	pingEvery = 20 * time.Second
+)
+
 type StreamHandler struct {
-	hub *realtime.Hub
+	hub      *realtime.Hub
+	polls    *mongo.Collection
+	votes    *mongo.Collection
+	upgrader websocket.Upgrader
 }
 
-// NewStreamHandler binds the realtime hub to the stream handler.
-func NewStreamHandler(hub *realtime.Hub) *StreamHandler {
-	return &StreamHandler{hub: hub}
+func NewStreamHandler(hub *realtime.Hub, db *mongo.Database) *StreamHandler {
+	return &StreamHandler{
+		hub:   hub,
+		polls: db.Collection("polls"),
+		votes: db.Collection("votes"),
+		upgrader: websocket.Upgrader{
+			HandshakeTimeout: 5 * time.Second,
+			ReadBufferSize:   1024, WriteBufferSize: 2048,
+			CheckOrigin: func(*http.Request) bool { return true }, // exact origin is checked by CORS middleware first
+		},
+	}
 }
 
-// Stream is an SSE endpoint.
-// On connect the client receives a keepalive. Subsequent events are forwarded
-// verbatim from Redis pub/sub as `event: update\ndata: {json}\n\n`.
+// Stream upgrades to a bounded WebSocket, sends a durable snapshot first, and
+// then forwards versioned Redis events. Clients replace state from REST on any
+// version gap or reconnect.
 func (s *StreamHandler) Stream(c *gin.Context) {
 	slug := c.Param("slug")
-
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		c.AbortWithStatus(http.StatusInternalServerError)
+	var poll models.Poll
+	if err := s.polls.FindOne(c.Request.Context(), bson.M{"slug": slug, "deleted_at": bson.M{"$exists": false}}).Decode(&poll); err != nil {
+		c.JSON(http.StatusNotFound, middleware.ErrorBody("poll_not_found", "Poll not found."))
 		return
 	}
 
-	// Initial keepalive so the client knows the stream is open.
-	c.Writer.Write([]byte(": connected\n\n"))
-	flusher.Flush()
+	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	conn.SetReadLimit(1024)
+	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
+
+	ownerID, ownerAuthenticated := c.Get("user_id")
+	canViewResults := ownerAuthenticated && ownerID == poll.CreatedBy
+	canViewResults = canViewResults || poll.Closed || !poll.HideResults || (poll.ClosesAt != nil && !poll.ClosesAt.After(time.Now().UTC()))
+	if !canViewResults {
+		if voterID, cookieErr := c.Cookie("ppv"); cookieErr == nil && voterID != "" {
+			count, countErr := s.votes.CountDocuments(c.Request.Context(), bson.M{"poll_id": poll.ID, "voter_id": voterID})
+			canViewResults = countErr == nil && count > 0
+		}
+	}
+	counts, total := countsFromPoll(&poll)
+	if !canViewResults {
+		counts = nil
+		total = 0
+	}
+	if err := conn.WriteJSON(gin.H{
+		"type": "snapshot", "pollId": slug, "version": poll.Version,
+		"counts": counts, "total": total, "status": pollStatus(&poll),
+	}); err != nil {
+		return
+	}
 
 	ctx := c.Request.Context()
-
-	// Subscribe to the Redis channel for this poll.
-	ps := s.hub.Subscribe(ctx, slug)
-	defer ps.Close()
-	ch := ps.Channel()
-
-	ticker := time.NewTicker(15 * time.Second)
+	pubsub := s.hub.Subscribe(ctx, slug)
+	defer pubsub.Close()
+	messages := pubsub.Channel(redis.WithChannelSize(32))
+	ticker := time.NewTicker(pingEvery)
 	defer ticker.Stop()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case msg, ok := <-ch:
+		case <-done:
+			return
+		case message, ok := <-messages:
 			if !ok {
 				return
 			}
-			c.Writer.Write([]byte("event: update\ndata: " + msg.Payload + "\n\n"))
-			flusher.Flush()
+			_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+			payload := []byte(message.Payload)
+			if !canViewResults {
+				var event map[string]any
+				if json.Unmarshal(payload, &event) == nil {
+					delete(event, "counts")
+					delete(event, "optionId")
+					delete(event, "delta")
+					payload, _ = json.Marshal(event)
+				}
+			}
+			if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+				return
+			}
 		case <-ticker.C:
-			c.Writer.Write([]byte(": heartbeat\n\n"))
-			flusher.Flush()
+			_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
+				return
+			}
 		}
 	}
 }

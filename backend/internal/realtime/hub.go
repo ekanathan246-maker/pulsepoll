@@ -7,12 +7,64 @@ import (
 	"log"
 	"time"
 
+	"pulsepoll/backend/internal/models"
+
 	"github.com/redis/go-redis/v9"
 )
+
+var applyEventScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[4]) == 1 then
+  return 0
+end
+local current = tonumber(redis.call('GET', KEYS[2]) or '0')
+local incoming = tonumber(ARGV[1])
+if incoming >= current then
+  local counts = cjson.decode(ARGV[3])
+  redis.call('DEL', KEYS[1])
+  for optionId, count in pairs(counts) do
+    redis.call('HSET', KEYS[1], optionId, count)
+  end
+  redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[5])
+  redis.call('SET', KEYS[3], ARGV[4], 'EX', ARGV[5])
+  redis.call('EXPIRE', KEYS[1], ARGV[5])
+  redis.call('PUBLISH', KEYS[5], ARGV[2])
+end
+redis.call('SET', KEYS[4], '1', 'EX', '86400')
+return 1
+`)
 
 // Hub wraps Redis operations for live vote counts and pub/sub fan-out.
 type Hub struct {
 	rdb *redis.Client
+}
+
+// ApplyEvent idempotently replaces the hot snapshot and publishes the durable
+// event. Supplying a full count snapshot means a version gap self-heals.
+func (h *Hub) ApplyEvent(ctx context.Context, event models.OutboxEvent) error {
+	payload, err := json.Marshal(ginEvent(event))
+	if err != nil {
+		return err
+	}
+	counts, err := json.Marshal(event.Counts)
+	if err != nil {
+		return err
+	}
+	_, err = applyEventScript.Run(ctx, h.rdb, []string{
+		PollVotesKey(event.AggregateID),
+		PollVersionKey(event.AggregateID),
+		PollStatusKey(event.AggregateID),
+		AppliedEventKey(event.EventID),
+		PollEventsChannel(event.AggregateID),
+	}, event.Version, string(payload), string(counts), event.Status, int64((30*24*time.Hour)/time.Second)).Result()
+	return err
+}
+
+func ginEvent(event models.OutboxEvent) map[string]any {
+	return map[string]any{
+		"type": event.Type, "eventId": event.EventID, "pollId": event.AggregateID,
+		"version": event.Version, "optionId": event.OptionID, "delta": event.Delta,
+		"counts": event.Counts, "status": event.Status,
+	}
 }
 
 // NewHub returns a Hub bound to the given Redis client.

@@ -25,6 +25,20 @@ func EnsureIndexes(ctx context.Context, mongoURI, dbName string) error {
 		return err
 	}
 
+	sessions := db.Collection("sessions")
+	if _, err := sessions.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "token_hash", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys:    bson.D{{Key: "expires_at", Value: 1}},
+			Options: options.Index().SetExpireAfterSeconds(0),
+		},
+	}); err != nil {
+		return err
+	}
+
 	polls := db.Collection("polls")
 	if _, err := polls.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "slug", Value: 1}},
@@ -40,7 +54,21 @@ func EnsureIndexes(ctx context.Context, mongoURI, dbName string) error {
 
 	votes := db.Collection("votes")
 	if _, err := votes.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: "poll_id", Value: 1}, {Key: "voter_id", Value: 1}},
+		Keys:    bson.D{{Key: "poll_id", Value: 1}, {Key: "voter_id", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		return err
+	}
+
+	outbox := db.Collection("outbox")
+	if _, err := outbox.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "event_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{Key: "processed_at", Value: 1}, {Key: "next_attempt_at", Value: 1}, {Key: "claimed_until", Value: 1}},
+		},
 	}); err != nil {
 		return err
 	}

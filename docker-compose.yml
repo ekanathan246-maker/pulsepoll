@@ -12,10 +12,11 @@ services:
 
   mongo:
     image: mongo:7
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }\""]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -25,10 +26,9 @@ services:
     environment:
       PORT: "8080"
       ENV: "development"
-      MONGO_URI: "mongodb://mongo:27017"
+      MONGO_URI: "mongodb://mongo:27017/?replicaSet=rs0"
       MONGO_DB: "pulsepoll"
       REDIS_ADDR: "redis:6379"
-      JWT_SECRET: "local-dev-secret"
       FRONTEND_ORIGINS: "http://localhost:5173,http://localhost"
       PUBLIC_URL: "${PUBLIC_URL:-}"
     depends_on:

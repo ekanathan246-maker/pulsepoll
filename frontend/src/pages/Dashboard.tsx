@@ -79,6 +79,9 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="poll-row-actions">
+				<a className="btn btn-ghost" href={`/api/polls/${p.slug}/export.csv`} download>
+					Export CSV
+				</a>
                 <button className="btn btn-ghost" onClick={() => setShareSlug(p.slug)}>
                   Share
                 </button>
