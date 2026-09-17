@@ -10,10 +10,10 @@ export default function ShareCard({ slug }: { slug: string }) {
   useEffect(() => {
     if (!canvasRef.current) return
     QRCode.toCanvas(canvasRef.current, url, {
-      width: 600,
+      width: 1024,
       margin: 0,
       errorCorrectionLevel: 'M',
-      color: { dark: '#160203', light: '#ffffff' },
+      color: { dark: '#0b0101', light: '#ffffff' },
     }).catch(() => {})
   }, [url])
 
