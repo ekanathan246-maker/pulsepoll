@@ -28,7 +28,7 @@ func EnsureIndexes(ctx context.Context, mongoURI, dbName string) error {
 	polls := db.Collection("polls")
 	if _, err := polls.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "slug", Value: 1}},
-		Options: options.Index().SetUnique(true),
+		Options: options.Index().SetUnique(true).SetPartialFilterExpression(bson.M{"slug": bson.M{"$type": "string"}}),
 	}); err != nil {
 		return err
 	}
