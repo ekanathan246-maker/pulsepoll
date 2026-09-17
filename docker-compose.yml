@@ -1,6 +1,6 @@
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.9-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
@@ -11,7 +11,7 @@ services:
       retries: 10
 
   mongo:
-    image: mongo:7
+    image: mongo:7.0.43@sha256:9854f7139445d766a9523571d6f047530c45547460ffcf8259eb2bf4264632ca
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongo-data:/data/db
@@ -30,7 +30,7 @@ services:
       MONGO_DB: "pulsepoll"
       REDIS_ADDR: "redis:6379"
       FRONTEND_ORIGINS: "http://localhost:5173,http://localhost"
-      PUBLIC_URL: "${PUBLIC_URL:-}"
+      PUBLIC_URL: "${PUBLIC_URL:-http://localhost}"
     depends_on:
       redis:
         condition: service_healthy

@@ -1,8 +1,12 @@
 # PulsePoll
 
+[![CI](https://github.com/ekanathan246-maker/pulsepoll/actions/workflows/ci.yml/badge.svg?branch=codex%2Fproduction-rebuild)](https://github.com/ekanathan246-maker/pulsepoll/actions/workflows/ci.yml?query=branch%3Acodex%2Fproduction-rebuild)
+
 PulsePoll turns one question into a shared live moment: create a poll, share a link or QR code, and watch versioned results move across every connected screen.
 
 ![PulsePoll live poll on desktop](docs/screenshots/live-poll.png)
+
+[Watch the verified 4:59 engineering walkthrough](https://github.com/ekanathan246-maker/pulsepoll/releases/download/v1.0.0-rc.1/pulsepoll-engineering-demo.mp4) · [narration and reproducible build](docs/video/README.md)
 
 This repository is deliberately **production-shaped, not production-claimed**. MongoDB is the durable acceptance boundary, Redis owns the hot snapshot and multi-instance fan-out, and reconnecting clients repair themselves from a versioned REST snapshot. The included free-tier deployment is suitable for an evaluation demo, not an SLA.
 
@@ -159,6 +163,8 @@ Never commit secrets. `.env.example` contains names and safe local examples only
 - [Interview questions and honest trade-offs](docs/INTERVIEW_GUIDE.md)
 - [OpenAPI contract](docs/openapi.yaml)
 - [Measured local load evidence](docs/evidence/README.md)
+- [Submission readiness matrix](docs/SUBMISSION_CHECKLIST.md)
+- [3–5 minute fallback video source and narration](docs/video/README.md)
 
 ## License
 

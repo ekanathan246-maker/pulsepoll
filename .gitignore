@@ -5,6 +5,7 @@ dist/
 test-results/
 playwright-report/
 coverage/
+__pycache__/
 .env
 *.log
 *.tsbuildinfo
