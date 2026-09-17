@@ -11,7 +11,7 @@ export default function ShareCard({ slug }: { slug: string }) {
     if (!canvasRef.current) return
     QRCode.toCanvas(canvasRef.current, url, {
       width: 600,
-      margin: 2,
+      margin: 0,
       errorCorrectionLevel: 'M',
       color: { dark: '#160203', light: '#ffffff' },
     }).catch(() => {})
@@ -38,7 +38,7 @@ export default function ShareCard({ slug }: { slug: string }) {
   async function downloadQr() {
     const dataUrl = await QRCode.toDataURL(url, {
       width: 1024,
-      margin: 2,
+      margin: 0,
       errorCorrectionLevel: 'M',
       color: { dark: '#160203', light: '#ffffff' },
     })
