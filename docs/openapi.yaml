@@ -1,0 +1,289 @@
+openapi: 3.1.0
+info:
+  title: PulsePoll API
+  version: 1.0.0
+  description: Durable live polling API. Browser authentication uses an HttpOnly session cookie plus CSRF header for owner state changes.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: /api
+paths:
+  /livez:
+    get:
+      summary: Check whether the API process is alive
+      operationId: live
+      security: []
+      responses:
+        "200": { description: Process is alive }
+  /readyz:
+    get:
+      summary: Check whether required dependencies are ready
+      operationId: ready
+      security: []
+      responses:
+        "200": { description: MongoDB and Redis are reachable }
+        "503": { description: A required dependency is unavailable }
+  /metrics:
+    get:
+      summary: Read process and outbox health metrics
+      operationId: operationalMetrics
+      security: []
+      responses:
+        "200":
+          description: Request, WebSocket, relay, and outbox metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "503": { description: Metrics dependency is unavailable }
+  /auth/signup:
+    post:
+      summary: Create an account and browser session
+      operationId: signup
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, email, password]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 60 }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        "200":
+          description: Session and CSRF cookies were created
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /auth/login:
+    post:
+      summary: Authenticate and rotate the browser session
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: Authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/me:
+    get:
+      summary: Get the current authenticated user
+      operationId: currentUser
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200": { description: Current user, content: { application/json: { schema: { $ref: "#/components/schemas/User" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/logout:
+    post:
+      summary: Revoke the current browser session
+      operationId: logout
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      responses:
+        "200": { description: Session revoked and cookies cleared }
+  /polls:
+    get:
+      summary: List polls owned by the current user
+      operationId: listOwnedPolls
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Newest polls first
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Poll" } }
+    post:
+      summary: Create a new poll
+      operationId: createPoll
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePoll" }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Poll" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /polls/{slug}:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+    get:
+      summary: Get a durable public poll snapshot
+      operationId: getPoll
+      security: []
+      responses:
+        "200": { description: Durable poll snapshot, content: { application/json: { schema: { $ref: "#/components/schemas/Poll" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      summary: Soft-archive an owned poll
+      operationId: archivePoll
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      responses:
+        "200": { description: Soft archived }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /polls/{slug}/vote:
+    post:
+      summary: Cast one browser-identity vote
+      operationId: vote
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Slug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [optionId]
+              properties: { optionId: { type: string } }
+      responses:
+        "202":
+          description: The vote transaction committed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted, version, counts, total]
+                properties:
+                  accepted: { const: true }
+                  version: { type: integer, format: int64 }
+                  counts: { type: object, additionalProperties: { type: integer, format: int64 } }
+                  total: { type: integer, format: int64 }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { description: Rate limited, headers: { Retry-After: { schema: { type: integer } } } }
+        "503": { description: Vote was not accepted }
+  /polls/{slug}/close:
+    patch:
+      summary: Close or reopen an owned poll
+      operationId: togglePollStatus
+      parameters:
+        - $ref: "#/components/parameters/Slug"
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      responses:
+        "200":
+          description: Status changed and outbox event committed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  closed: { type: boolean }
+                  version: { type: integer, format: int64 }
+  /polls/{slug}/export.csv:
+    get:
+      summary: Export owned poll totals as CSV
+      operationId: exportPollCSV
+      parameters:
+        - $ref: "#/components/parameters/Slug"
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200": { description: Owner-only option totals, content: { text/csv: { schema: { type: string } } } }
+  /polls/{slug}/live:
+    get:
+      summary: Upgrade to the versioned poll WebSocket
+      operationId: livePollWebSocket
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Slug"
+      responses:
+        "101": { description: WebSocket upgrade. First frame is a snapshot; following frames are versioned events. }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: pp_token
+    csrfHeader:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+  parameters:
+    Slug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[a-z0-9]{8}$" }
+  schemas:
+    User:
+      type: object
+      required: [id, name, email]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+    CreatePoll:
+      type: object
+      additionalProperties: false
+      required: [title, options]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 160 }
+        description: { type: string, maxLength: 500 }
+        options:
+          type: array
+          minItems: 2
+          maxItems: 10
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 80 }
+        closesAt: { type: string, format: date-time }
+        showResultsBeforeVote: { type: boolean, default: false }
+    Option:
+      type: object
+      required: [id, text, count]
+      properties:
+        id: { type: string }
+        text: { type: string }
+        count: { type: integer, format: int64 }
+    Poll:
+      type: object
+      required: [id, slug, title, options, closed, version, totalVotes, canViewResults]
+      properties:
+        id: { type: string }
+        slug: { type: string }
+        title: { type: string }
+        description: { type: string }
+        options: { type: array, items: { $ref: "#/components/schemas/Option" } }
+        closed: { type: boolean }
+        version: { type: integer, format: int64 }
+        closes_at: { type: string, format: date-time }
+        totalVotes: { type: integer, format: int64 }
+        liveCounts: { type: object, additionalProperties: { type: integer, format: int64 } }
+        canViewResults: { type: boolean }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+  responses:
+    BadRequest:
+      description: Invalid or malformed input
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unauthorized:
+      description: Authentication required
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Conflict:
+      description: State conflict such as duplicate vote or closed poll
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    NotFound:
+      description: Resource not found
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

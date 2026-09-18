@@ -7,6 +7,8 @@ export default function CreatePoll() {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [options, setOptions] = useState(['', ''])
+	const [closesAt, setClosesAt] = useState('')
+	const [showResultsBeforeVote, setShowResultsBeforeVote] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -15,7 +17,7 @@ export default function CreatePoll() {
   }
 
   function addOption() {
-    if (options.length >= 12) return
+	if (options.length >= 10) return
     setOptions((prev) => [...prev, ''])
   }
 
@@ -33,6 +35,8 @@ export default function CreatePoll() {
         title,
         description,
         options: options.map((o) => o.trim()).filter(Boolean),
+		closesAt: closesAt ? new Date(closesAt).toISOString() : undefined,
+		showResultsBeforeVote,
       })
       navigate(`/poll/${poll.slug}`)
     } catch (err) {
@@ -100,12 +104,25 @@ export default function CreatePoll() {
               </button>
             </div>
           ))}
-          {options.length < 12 && (
+		{options.length < 10 && (
             <button type="button" className="add-option" onClick={addOption}>
               + Add option
             </button>
           )}
         </div>
+
+		<div className="card">
+			<h2 className="card-title">Voting rules</h2>
+			<p className="card-sub">Keep results suspenseful, and optionally let the poll close itself.</p>
+			<div className="form-row">
+				<label htmlFor="closesAt">Close automatically (optional)</label>
+				<input id="closesAt" className="input" type="datetime-local" value={closesAt} onChange={(event) => setClosesAt(event.target.value)} />
+			</div>
+			<label className="check-row">
+				<input type="checkbox" checked={showResultsBeforeVote} onChange={(event) => setShowResultsBeforeVote(event.target.checked)} />
+				<span>Show live results before someone votes</span>
+			</label>
+		</div>
 
         {error && <p className="form-error">{error}</p>}
         <button className="btn btn-primary btn-block" disabled={busy || filled < 2}>

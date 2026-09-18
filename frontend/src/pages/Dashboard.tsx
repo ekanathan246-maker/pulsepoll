@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError } from '../lib/api'
 import type { Poll } from '../lib/types'
@@ -17,25 +17,34 @@ export default function Dashboard() {
   const [error, setError] = useState('')
   const [shareSlug, setShareSlug] = useState<string | null>(null)
 
-  if (polls === null && !error) {
-    api
+  useEffect(() => {
+    void api
       .getMine()
       .then(setPolls)
       .catch((e) => setError(e instanceof ApiError ? e.message : 'Failed to load polls'))
-  }
+  }, [])
 
   async function toggleClose(p: Poll) {
-    const res = await api.closePoll(p.slug).catch(() => null)
-    if (!res) return
-    setPolls((prev) =>
-      prev ? prev.map((x) => (x.slug === p.slug ? { ...x, closed: res.closed } : x)) : prev,
-    )
+    setError('')
+    try {
+      const res = await api.closePoll(p.slug)
+      setPolls((prev) =>
+        prev ? prev.map((x) => (x.slug === p.slug ? { ...x, closed: res.closed } : x)) : prev,
+      )
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not change poll status')
+    }
   }
 
   async function remove(p: Poll) {
-    if (!confirm(`Delete "${p.title}"? This cannot be undone.`)) return
-    await api.deletePoll(p.slug).catch(() => null)
-    setPolls((prev) => (prev ? prev.filter((x) => x.slug !== p.slug) : prev))
+    if (!confirm(`Archive "${p.title}"? It will disappear from your dashboard and public link.`)) return
+    setError('')
+    try {
+      await api.deletePoll(p.slug)
+      setPolls((prev) => (prev ? prev.filter((x) => x.slug !== p.slug) : prev))
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not archive poll')
+    }
   }
 
   return (
@@ -79,6 +88,9 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="poll-row-actions">
+				<a className="btn btn-ghost" href={`/api/polls/${p.slug}/export.csv`} download>
+					Export CSV
+				</a>
                 <button className="btn btn-ghost" onClick={() => setShareSlug(p.slug)}>
                   Share
                 </button>
@@ -86,7 +98,7 @@ export default function Dashboard() {
                   {p.closed ? 'Reopen' : 'Close'}
                 </button>
                 <button className="btn btn-danger" onClick={() => remove(p)}>
-                  Delete
+                  Archive
                 </button>
               </div>
             </div>

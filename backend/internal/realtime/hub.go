@@ -7,17 +7,127 @@ import (
 	"log"
 	"time"
 
+	"pulsepoll/backend/internal/models"
+
 	"github.com/redis/go-redis/v9"
 )
+
+var applyEventScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[4]) == 1 then
+  return 0
+end
+local current = tonumber(redis.call('GET', KEYS[2]) or '0')
+local incoming = tonumber(ARGV[1])
+if incoming >= current then
+  local counts = cjson.decode(ARGV[3])
+  redis.call('DEL', KEYS[1])
+  for optionId, count in pairs(counts) do
+    redis.call('HSET', KEYS[1], optionId, count)
+  end
+  redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[5])
+  redis.call('SET', KEYS[3], ARGV[4], 'EX', ARGV[5])
+  redis.call('EXPIRE', KEYS[1], ARGV[5])
+  redis.call('PUBLISH', KEYS[5], ARGV[2])
+end
+redis.call('SET', KEYS[4], '1', 'EX', '86400')
+return 1
+`)
 
 // Hub wraps Redis operations for live vote counts and pub/sub fan-out.
 type Hub struct {
 	rdb *redis.Client
 }
 
+var repairSnapshotScript = redis.NewScript(`
+local current = tonumber(redis.call('GET', KEYS[2]) or '0')
+local incoming = tonumber(ARGV[1])
+if incoming >= current then
+  local counts = cjson.decode(ARGV[2])
+  redis.call('DEL', KEYS[1])
+  for optionId, count in pairs(counts) do
+    redis.call('HSET', KEYS[1], optionId, count)
+  end
+  redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[4])
+  redis.call('SET', KEYS[3], ARGV[3], 'EX', ARGV[4])
+  redis.call('EXPIRE', KEYS[1], ARGV[4])
+end
+return 1
+`)
+
+// ApplyEvent idempotently replaces the hot snapshot and publishes the durable
+// event. Supplying a full count snapshot means a version gap self-heals.
+func (h *Hub) ApplyEvent(ctx context.Context, event models.OutboxEvent) error {
+	payload, err := json.Marshal(ginEvent(event))
+	if err != nil {
+		return err
+	}
+	counts, err := json.Marshal(event.Counts)
+	if err != nil {
+		return err
+	}
+	_, err = applyEventScript.Run(ctx, h.rdb, []string{
+		PollCountsKey(event.AggregateID),
+		PollVersionKey(event.AggregateID),
+		PollStatusKey(event.AggregateID),
+		AppliedEventKey(event.EventID),
+		PollEventsChannel(event.AggregateID),
+	}, event.Version, string(payload), string(counts), event.Status, int64((30*24*time.Hour)/time.Second)).Result()
+	return err
+}
+
+func ginEvent(event models.OutboxEvent) map[string]any {
+	return map[string]any{
+		"type": event.Type, "eventId": event.EventID, "pollId": event.AggregateID,
+		"version": event.Version, "optionId": event.OptionID, "delta": event.Delta,
+		"counts": event.Counts, "status": event.Status,
+	}
+}
+
 // NewHub returns a Hub bound to the given Redis client.
 func NewHub(rdb *redis.Client) *Hub {
 	return &Hub{rdb: rdb}
+}
+
+// DurableSnapshot returns the hot Redis view and its version. Callers use it
+// only when its version exactly matches Mongo; Mongo remains the authority.
+func (h *Hub) DurableSnapshot(ctx context.Context, slug string) (map[string]int64, int64, string, error) {
+	pipe := h.rdb.Pipeline()
+	countsCmd := pipe.HGetAll(ctx, PollCountsKey(slug))
+	versionCmd := pipe.Get(ctx, PollVersionKey(slug))
+	statusCmd := pipe.Get(ctx, PollStatusKey(slug))
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return nil, 0, "", err
+	}
+	version, err := versionCmd.Int64()
+	if err != nil {
+		return nil, 0, "", err
+	}
+	status, err := statusCmd.Result()
+	if err != nil {
+		return nil, 0, "", err
+	}
+	counts := make(map[string]int64, len(countsCmd.Val()))
+	for optionID, raw := range countsCmd.Val() {
+		var value int64
+		if _, err := fmt.Sscan(raw, &value); err != nil {
+			return nil, 0, "", err
+		}
+		counts[optionID] = value
+	}
+	return counts, version, status, nil
+}
+
+// RepairSnapshot repopulates an absent or stale hot view without publishing a
+// user-visible event. Version monotonicity prevents older repairs overwriting
+// a newer outbox event.
+func (h *Hub) RepairSnapshot(ctx context.Context, slug string, version int64, counts map[string]int64, status string) error {
+	encoded, err := json.Marshal(counts)
+	if err != nil {
+		return err
+	}
+	return repairSnapshotScript.Run(ctx, h.rdb, []string{
+		PollCountsKey(slug), PollVersionKey(slug), PollStatusKey(slug),
+	}, version, string(encoded), status, int64((30*24*time.Hour)/time.Second)).Err()
 }
 
 // VoteSnapshot is the JSON payload sent on each vote event.
@@ -31,7 +141,7 @@ type VoteSnapshot struct {
 // into the dedup set (returning true if the vote was new), then publishes
 // a full snapshot to the pub/sub channel.
 func (h *Hub) IncrVote(ctx context.Context, slug, optionID, voterID string) (*VoteSnapshot, bool, error) {
-	votesKey := PollVotesKey(slug)
+	votesKey := PollCountsKey(slug)
 	totalKey := PollTotalKey(slug)
 	votersKey := PollVotersKey(slug)
 
@@ -71,7 +181,7 @@ func (h *Hub) IncrVote(ctx context.Context, slug, optionID, voterID string) (*Vo
 
 // SnapshotCounts reads the full vote tallies straight from Redis.
 func (h *Hub) SnapshotCounts(ctx context.Context, slug string) (map[string]int64, int64, error) {
-	counts, err := h.rdb.HGetAll(ctx, PollVotesKey(slug)).Result()
+	counts, err := h.rdb.HGetAll(ctx, PollCountsKey(slug)).Result()
 	if err != nil {
 		return nil, 0, err
 	}

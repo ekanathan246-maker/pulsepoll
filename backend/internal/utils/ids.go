@@ -35,3 +35,8 @@ func NewOptionID() (string, error) {
 func NewVoterID() (string, error) {
 	return randomString(optAlphabet, 16)
 }
+
+// NewEventID returns a high-entropy idempotency key for outbox delivery.
+func NewEventID() (string, error) {
+	return randomString(optAlphabet, 24)
+}

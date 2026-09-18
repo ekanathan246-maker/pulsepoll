@@ -8,10 +8,11 @@ interface ResultBarProps {
   voted: boolean
   disabled: boolean
   winner: boolean
+	reveal: boolean
   onVote: (option: Option) => void
 }
 
-export function ResultBar({ option, votes, total, voted, disabled, winner, onVote }: ResultBarProps) {
+export function ResultBar({ option, votes, total, voted, disabled, winner, reveal, onVote }: ResultBarProps) {
   const pct = total > 0 ? Math.round((votes / total) * 100) : 0
   return (
     <button
@@ -20,15 +21,15 @@ export function ResultBar({ option, votes, total, voted, disabled, winner, onVot
       disabled={disabled}
       title={disabled ? undefined : option.text}
     >
-      <div className="bar-track">
+		{reveal && <div className="bar-track">
         <div className="bar-fill" style={{ width: `${pct}%` }} />
-      </div>
+		</div>}
       <div className="option-top">
         <span className="option-text">{option.text}</span>
-        <span className="option-meta">
+		{reveal && <span className="option-meta">
           {voted && <span className="voted-badge">Your vote · </span>}
           {votes} ({pct}%)
-        </span>
+		</span>}
       </div>
     </button>
   )

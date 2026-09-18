@@ -31,19 +31,26 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+	const method = (init?.method ?? 'GET').toUpperCase()
+	const csrfToken = document.cookie
+		.split('; ')
+		.find((entry) => entry.startsWith('pp_csrf='))
+		?.slice('pp_csrf='.length)
   const res = await fetch(`/api${path}`, {
+		...init,
     credentials: 'include',
     headers: {
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+			...(method !== 'GET' && method !== 'HEAD' && csrfToken ? { 'X-CSRF-Token': decodeURIComponent(csrfToken) } : {}),
       ...init?.headers,
     },
-    ...init,
   })
   if (!res.ok) {
     let msg = `${res.status}`
     try {
       const body = await res.json()
-      if (body?.error) msg = body.error
+			if (typeof body?.error === 'string') msg = body.error
+			if (body?.error?.message) msg = body.error.message
     } catch {
       /* ignore */
     }
@@ -64,7 +71,7 @@ export const api = {
     }),
   logout: () => request<{ message: string }>('/auth/logout', { method: 'POST' }),
 
-  createPoll: (body: { title: string; description: string; options: string[] }) =>
+	createPoll: (body: { title: string; description: string; options: string[]; closesAt?: string; showResultsBeforeVote: boolean }) =>
     request<Poll>('/polls', { method: 'POST', body: JSON.stringify(body) }),
 
   getMine: () => request<Poll[]>('/polls'),
@@ -72,7 +79,7 @@ export const api = {
   getPoll: (slug: string) => request<Poll>(`/polls/${slug}`),
 
   vote: (slug: string, optionId: string) =>
-    request<{ counts: Record<string, number>; total: number }>(`/polls/${slug}/vote`, {
+	request<{ accepted: boolean; version: number; counts: Record<string, number>; total: number }>(`/polls/${slug}/vote`, {
       method: 'POST',
       body: JSON.stringify({ optionId }),
     }),
@@ -84,6 +91,7 @@ export const api = {
     request<{ message: string }>(`/polls/${slug}`, { method: 'DELETE' }),
 }
 
-export function streamPoll(slug: string): EventSource {
-  return new EventSource(`/api/polls/${slug}/stream`)
+export function streamPoll(slug: string): WebSocket {
+	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+	return new WebSocket(`${protocol}//${window.location.host}/api/polls/${slug}/live`)
 }

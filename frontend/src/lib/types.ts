@@ -20,12 +20,19 @@ export interface Poll {
   created_at: string
   closed: boolean
   hide_results: boolean
+	version: number
+	closes_at?: string
   totalVotes: number
   liveCounts: Record<string, number>
+	canViewResults: boolean
 }
 
 export interface VoteUpdate {
-  counts: Record<string, number>
+	type: 'snapshot' | 'vote.applied' | 'poll.closed' | 'poll.reopened'
+	eventId?: string
+	pollId: string
+	version: number
+	counts?: Record<string, number>
   total: number
-  closed?: boolean
+	status: 'open' | 'closed'
 }

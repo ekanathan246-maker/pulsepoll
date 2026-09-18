@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"strings"
 )
@@ -13,7 +15,7 @@ type Config struct {
 	MongoDB    string
 	RedisAddr  string
 	RedisPass  string
-	JWTSecret  string
+	RedisURL   string
 	Frontends  []string
 	CookieName string
 	PublicURL  string
@@ -65,7 +67,7 @@ func Load() *Config {
 		MongoDB:    getenv("MONGO_DB", "pulsepoll"),
 		RedisAddr:  getenv("REDIS_ADDR", "localhost:6379"),
 		RedisPass:  getenv("REDIS_PASS", ""),
-		JWTSecret:  getenv("JWT_SECRET", "dev-secret-change-me"),
+		RedisURL:   getenv("REDIS_URL", ""),
 		Frontends:  getenvs("FRONTEND_ORIGINS", []string{"http://localhost:5173", "http://localhost"}),
 		CookieName: "pp_token",
 		PublicURL:  strings.TrimRight(getenv("PUBLIC_URL", ""), "/"),
@@ -75,4 +77,19 @@ func Load() *Config {
 // IsProduction reports whether the app runs in a production environment.
 func (c *Config) IsProduction() bool {
 	return c.Env == "production"
+}
+
+func (c *Config) Validate() error {
+	if _, err := net.LookupPort("tcp", c.Port); err != nil {
+		return fmt.Errorf("PORT must be a valid TCP port: %w", err)
+	}
+	if c.IsProduction() {
+		if strings.Contains(c.MongoURI, "localhost") {
+			return fmt.Errorf("MONGO_URI must be configured for production")
+		}
+		if c.RedisURL == "" && strings.HasPrefix(c.RedisAddr, "localhost") {
+			return fmt.Errorf("REDIS_URL or REDIS_ADDR must be configured for production")
+		}
+	}
+	return nil
 }
