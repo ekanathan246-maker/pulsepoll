@@ -135,6 +135,10 @@ func ensureVoteClaims(ctx context.Context, votes, voteClaims *mongo.Collection) 
 	}
 
 	cursor, err := votes.Aggregate(ctx, mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{
+			{Key: "poll_id", Value: bson.D{{Key: "$type", Value: "objectId"}}},
+			{Key: "voter_id", Value: bson.D{{Key: "$type", Value: "string"}, {Key: "$ne", Value: ""}}},
+		}}},
 		{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: bson.D{{Key: "poll_id", Value: "$poll_id"}, {Key: "voter_id", Value: "$voter_id"}}},
 		}}},

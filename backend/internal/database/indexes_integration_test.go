@@ -42,6 +42,8 @@ func TestEnsureIndexesBackfillsVoteClaimsWithoutDeletingLegacyDuplicates(t *test
 		bson.M{"poll_id": pollID, "voter_id": "same-browser", "option_id": "a"},
 		bson.M{"poll_id": pollID, "voter_id": "same-browser", "option_id": "b"},
 		bson.M{"poll_id": pollID, "voter_id": "another-browser", "option_id": "a"},
+		bson.M{"poll_id": pollID, "option_id": "legacy-missing-voter"},
+		bson.M{"poll_id": pollID, "voter_id": nil, "option_id": "legacy-null-voter"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +55,7 @@ func TestEnsureIndexesBackfillsVoteClaimsWithoutDeletingLegacyDuplicates(t *test
 		t.Fatalf("EnsureIndexes was not idempotent: %v", err)
 	}
 
-	if count, err := votes.CountDocuments(ctx, bson.M{}); err != nil || count != 3 {
+	if count, err := votes.CountDocuments(ctx, bson.M{}); err != nil || count != 5 {
 		t.Fatalf("historical votes changed: count=%d err=%v", count, err)
 	}
 	voteClaims := client.Database(dbName).Collection("vote_claims")
