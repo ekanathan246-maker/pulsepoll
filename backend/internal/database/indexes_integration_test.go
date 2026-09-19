@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-func TestEnsureIndexesMigratesLegacyVoteIndex(t *testing.T) {
+func TestEnsureIndexesBackfillsVoteClaimsWithoutDeletingLegacyDuplicates(t *testing.T) {
 	uri := os.Getenv("MONGO_TEST_URI")
 	if uri == "" {
 		t.Skip("MONGO_TEST_URI is not set")
@@ -36,33 +37,30 @@ func TestEnsureIndexesMigratesLegacyVoteIndex(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	pollID := primitive.NewObjectID()
+	if _, err := votes.InsertMany(ctx, []any{
+		bson.M{"poll_id": pollID, "voter_id": "same-browser", "option_id": "a"},
+		bson.M{"poll_id": pollID, "voter_id": "same-browser", "option_id": "b"},
+		bson.M{"poll_id": pollID, "voter_id": "another-browser", "option_id": "a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := EnsureIndexes(ctx, uri, dbName); err != nil {
-		t.Fatalf("EnsureIndexes failed to migrate the legacy index: %v", err)
+		t.Fatalf("EnsureIndexes failed to backfill vote claims: %v", err)
+	}
+	if err := EnsureIndexes(ctx, uri, dbName); err != nil {
+		t.Fatalf("EnsureIndexes was not idempotent: %v", err)
 	}
 
-	cursor, err := votes.Indexes().List(ctx)
-	if err != nil {
-		t.Fatal(err)
+	if count, err := votes.CountDocuments(ctx, bson.M{}); err != nil || count != 3 {
+		t.Fatalf("historical votes changed: count=%d err=%v", count, err)
 	}
-	defer cursor.Close(ctx)
-	foundUnique := false
-	for cursor.Next(ctx) {
-		var index struct {
-			Name   string `bson:"name"`
-			Unique bool   `bson:"unique"`
-		}
-		if err := cursor.Decode(&index); err != nil {
-			t.Fatal(err)
-		}
-		if index.Name == voteIdentityIndexName {
-			foundUnique = index.Unique
-		}
+	voteClaims := client.Database(dbName).Collection("vote_claims")
+	if count, err := voteClaims.CountDocuments(ctx, bson.M{}); err != nil || count != 2 {
+		t.Fatalf("expected one claim per poll/voter pair: count=%d err=%v", count, err)
 	}
-	if err := cursor.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if !foundUnique {
-		t.Fatalf("%s was not migrated to a unique index", voteIdentityIndexName)
+	if _, err := voteClaims.InsertOne(ctx, bson.M{"poll_id": pollID, "voter_id": "same-browser"}); !mongo.IsDuplicateKeyError(err) {
+		t.Fatalf("vote claim index did not reject a duplicate: %v", err)
 	}
 }

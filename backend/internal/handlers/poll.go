@@ -29,6 +29,7 @@ type PollHandler struct {
 	db     *mongo.Database
 	polls  *mongo.Collection
 	votes  *mongo.Collection
+	claims *mongo.Collection
 	outbox *mongo.Collection
 	hub    *realtime.Hub
 	cfg    *config.Config
@@ -39,6 +40,7 @@ func NewPollHandler(db *mongo.Database, hub *realtime.Hub, cfg *config.Config) *
 		db:     db,
 		polls:  db.Collection("polls"),
 		votes:  db.Collection("votes"),
+		claims: db.Collection("vote_claims"),
 		outbox: db.Collection("outbox"),
 		hub:    hub,
 		cfg:    cfg,
@@ -228,7 +230,7 @@ func (h *PollHandler) Vote(c *gin.Context) {
 	}
 
 	// Voter identity is abuse friction, not proof of one human. The durable
-	// unique index on (poll_id,voter_id) is the final duplicate-vote guard.
+	// unique vote claim on (poll_id,voter_id) is the final duplicate-vote guard.
 	voterID, err := c.Cookie("ppv")
 	if err != nil || voterID == "" {
 		voterID, err = utils.NewVoterID()
@@ -259,7 +261,13 @@ func (h *PollHandler) Vote(c *gin.Context) {
 	}
 	defer session.EndSession(ctx)
 	_, err = session.WithTransaction(ctx, func(tx mongo.SessionContext) (any, error) {
-		_, err := h.votes.InsertOne(tx, models.Vote{
+		_, err := h.claims.InsertOne(tx, bson.M{
+			"_id": primitive.NewObjectID(), "poll_id": poll.ID, "voter_id": voterID, "created_at": now,
+		})
+		if err != nil {
+			return nil, err
+		}
+		_, err = h.votes.InsertOne(tx, models.Vote{
 			ID: primitive.NewObjectID(), PollID: poll.ID, OptionID: req.OptionID,
 			VoterID: voterID, UserAgent: c.Request.UserAgent(), CreatedAt: now,
 		})
